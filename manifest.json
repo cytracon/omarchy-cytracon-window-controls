@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.cytracon.window-controls",
+  "name": "Window controls",
+  "version": "1.0.0",
+  "author": "Cytracon",
+  "license": "MIT",
+  "homepage": "https://github.com/cytracon/omarchy-window-controls",
+  "description": "A compact control bar on every Hyprland window: minimize, maximize, float, and close.",
+  "kinds": ["service"],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "Service.qml"
+  },
+  "tags": [
+    "hyprland",
+    "quickshell",
+    "desktop"
+  ]
+}
