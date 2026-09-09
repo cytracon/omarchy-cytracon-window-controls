@@ -169,16 +169,19 @@ Item {
     return service.zScore(other) > service.zScore(self)
   }
 
-  function setDragTarget(addr) {
-    var normalized = addr ? service.normalizedAddress(addr) : ""
-    if (!normalized) normalized = ""
-    if (service.dragTarget === normalized) return
-    service.dragTarget = normalized
+  function installHook() {
     var path = service.hookPath
     if (!path) return
-    var lua = "dofile(" + JSON.stringify(path) + "); window_controls.set_drag_target("
-      + (normalized ? JSON.stringify(normalized) : "nil") + ")"
+    var lua = "dofile(" + JSON.stringify(path) + "); window_controls.install("
+      + service.barWidth + ", " + service.barHeight + ", " + service.barInset + ")"
     Quickshell.execDetached(["hyprctl", "eval", lua])
+  }
+
+  function uninstallHook() {
+    var path = service.hookPath
+    if (!path) return
+    Quickshell.execDetached(["hyprctl", "eval",
+      "dofile(" + JSON.stringify(path) + "); window_controls.uninstall()"])
   }
 
   // Overlay layers always paint above every client. Hide a bar when an
@@ -297,7 +300,10 @@ Item {
     inactiveBorderProc.running = true
     clientsProc.running = true
     monitorsProc.running = true
+    Qt.callLater(service.installHook)
   }
+
+  Component.onDestruction: service.uninstallHook()
 
   Timer {
     interval: 80
@@ -312,11 +318,7 @@ Item {
     }
   }
 
-  Timer {
-    id: dragClearTimer
-    interval: 1500
-    onTriggered: service.setDragTarget("")
-  }
+
 
   component ControlButton: Item {
     id: btn
@@ -549,14 +551,6 @@ Item {
         HoverHandler {
           id: barHover
           cursorShape: chrome.dragging ? Qt.ClosedHandCursor : Qt.OpenHandCursor
-          onHoveredChanged: {
-            if (hovered && chrome.modelData) {
-              dragClearTimer.stop()
-              service.setDragTarget(chrome.modelData.address)
-            } else {
-              dragClearTimer.restart()
-            }
-          }
         }
 
         MouseArea {
@@ -589,31 +583,55 @@ Item {
             return i
           }
 
+          function beginMove(mouse) {
+            var g = cursorGlobal(mouse)
+            chrome.dragHotspotX = g.x - chrome.winX
+            chrome.dragHotspotY = g.y - chrome.winY
+            chrome.predX = chrome.winX
+            chrome.predY = chrome.winY
+            chrome.dragging = true
+            dragArea.dragMoved = false
+            service.bringToTop(chrome.modelData.address)
+            if (chrome.maximized)
+              service.toggleMaximize(chrome.modelData.address, chrome.fsMode)
+            service.ensureFloating(chrome.modelData.address, chrome.floating)
+          }
+
           onPressed: function(mouse) {
             if (!chrome.geo || !chrome.modelData) return
             if (mouse.button === Qt.RightButton) {
+              beginMove(mouse)
+              mouse.accepted = true
+              return
+            }
+            if (mouse.button === Qt.LeftButton) {
+              dragArea.dragMoved = false
               var g = cursorGlobal(mouse)
               chrome.dragHotspotX = g.x - chrome.winX
               chrome.dragHotspotY = g.y - chrome.winY
               chrome.predX = chrome.winX
               chrome.predY = chrome.winY
-              chrome.dragging = true
-              dragArea.dragMoved = false
-              service.bringToTop(chrome.modelData.address)
-              if (chrome.maximized)
-                service.toggleMaximize(chrome.modelData.address, chrome.fsMode)
-              service.ensureFloating(chrome.modelData.address, chrome.floating)
-              var addr = service.normalizedAddress(chrome.modelData.address)
-              if (addr)
-                service.dispatchLua("hl.dsp.window.drag({ window = \"address:" + addr + "\" })")
-              mouse.accepted = true
             }
           }
           onPositionChanged: function(mouse) {
-            if (!pressed || !chrome.dragging) return
+            if (!pressed || !chrome.modelData) return
             var g = cursorGlobal(mouse)
             var nx = g.x - chrome.dragHotspotX
             var ny = g.y - chrome.dragHotspotY
+            var dist = Math.abs(nx - chrome.predX) + Math.abs(ny - chrome.predY)
+            if (!chrome.dragging) {
+              if (mouse.buttons & Qt.LeftButton) {
+                if (dist < 8) return
+                chrome.dragging = true
+                dragArea.dragMoved = true
+                service.bringToTop(chrome.modelData.address)
+                if (chrome.maximized)
+                  service.toggleMaximize(chrome.modelData.address, chrome.fsMode)
+                service.ensureFloating(chrome.modelData.address, chrome.floating)
+              } else {
+                return
+              }
+            }
             if (Math.abs(nx - chrome.predX) > 1 || Math.abs(ny - chrome.predY) > 1)
               dragArea.dragMoved = true
             chrome.predX = nx
@@ -623,14 +641,14 @@ Item {
             chrome.pendingMove = true
           }
           onReleased: function(mouse) {
-            if (mouse.button === Qt.RightButton) {
+            if (chrome.dragging) {
               if (chrome.pendingMove && chrome.modelData)
                 service.moveWindowTo(chrome.modelData.address, chrome.pendingMoveX, chrome.pendingMoveY)
               chrome.pendingMove = false
               chrome.dragging = false
               return
             }
-            if (mouse.button === Qt.LeftButton && !chrome.dragging && chrome.modelData) {
+            if (mouse.button === Qt.LeftButton && chrome.modelData) {
               var which = buttonAt(mouse.x)
               if (which === 0) service.minimizeWindow(chrome.modelData.address)
               else if (which === 1) service.toggleMaximize(chrome.modelData.address, chrome.fsMode)

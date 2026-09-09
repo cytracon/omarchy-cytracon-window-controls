@@ -45,9 +45,10 @@ controls, and when an on-screen window stacked above covers the bar (so a rear
 window never paints controls on top of the one in front). Dispatchers target
 the window by address, so a click does not steal focus or warp the cursor.
 
-Hover the bar, then right-drag to move the window. That uses Hyprland's own
-mouse-drag bind (same mechanism as Super+Left mouse). A tiled or maximized
-window is floated first. Left-click still runs the four buttons.
+Move a window by dragging the bar: **right-click drag**, or **left-click drag**
+on the pill (not a click on a button). Right-drag uses Hyprland's mouse bind
+(same idea as Super+Left mouse). A tiled or maximized window is floated first.
+A short left-click on a button still runs minimize, maximize, float, or close.
 
 Optional Hyprland layer rule (skips the compositor fade on the overlay):
 
