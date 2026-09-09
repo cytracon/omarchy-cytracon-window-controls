@@ -40,9 +40,13 @@ omarchy plugin remove io.github.cytracon.window-controls --yes
 | Close | Close that window, focused or not |
 
 The bar is hidden for unmapped, hidden, minimized, peek, and true-fullscreen
-windows, and for windows that are too narrow to fit the controls. Dispatchers
-target the window by address, so a click does not steal focus or warp the
-cursor.
+windows, for windows that are too narrow to fit the controls, and when a window
+stacked above covers the bar (so a rear window never paints controls on top of
+the one in front). Dispatchers target the window by address, so a click does
+not steal focus or warp the cursor.
+
+Right-drag the bar to move the window. A tiled or maximized window is floated
+first, then follows the pointer. Left-click still runs the four buttons.
 
 Optional Hyprland layer rule (skips the compositor fade on the overlay):
 
