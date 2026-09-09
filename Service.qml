@@ -1,5 +1,5 @@
 // Compact top-right control bar on every Hyprland window:
-// minimize, maximize, float, close.
+// minimize, maximize, float, close. Right-drag moves the window.
 import QtQuick
 import Quickshell
 import Quickshell.Io
@@ -23,6 +23,9 @@ Item {
 
   property int borderSize: 2
   property color inactiveBorderColor: Color.muted
+  property var clients: []
+  property var activeWorkspaces: ({})
+  property int layoutGen: 0
 
   readonly property color accentColor: Color.flatColor(Color.pick("hyprland.active-border", Color.accent), Color.accent)
   readonly property color glyphColor: Color.flatColor(Color.pick("hyprland.active-border-foreground", Color.foreground), Color.foreground)
@@ -43,9 +46,14 @@ Item {
   }
 
   function normalizedAddress(addr) {
-    if (typeof addr !== "string") return null
-    var hex = addr.indexOf("0x") === 0 ? addr.slice(2) : addr
+    if (addr === undefined || addr === null) return null
+    var hex = String(addr)
+    if (hex.indexOf("0x") === 0) hex = hex.slice(2)
     return /^[0-9a-fA-F]+$/.test(hex) ? "0x" + hex : null
+  }
+
+  function isTruthyFlag(v) {
+    return v === true || v === 1 || v === "true"
   }
 
   function dispatchLua(lua) {
@@ -87,9 +95,7 @@ Item {
 
   function ensureFloating(addr, currentlyFloating) {
     if (currentlyFloating) return
-    var normalized = service.normalizedAddress(addr)
-    if (!normalized) return
-    service.dispatchLua("hl.dsp.window.float({ action = \"toggle\", window = \"address:" + normalized + "\" })")
+    service.toggleFloat(addr)
   }
 
   function moveWindowTo(addr, x, y) {
@@ -99,43 +105,72 @@ Item {
       + ", relative = false, window = \"address:" + normalized + "\" })")
   }
 
-  function focusHistoryId(info) {
-    if (!info || info.focusHistoryID === undefined || info.focusHistoryID === null) return 9999
-    var n = Number(info.focusHistoryID)
+  function workspaceNameOf(entry) {
+    if (!entry) return ""
+    if (entry.workspace && entry.workspace.name) return String(entry.workspace.name)
+    return ""
+  }
+
+  function isOnScreen(entry) {
+    if (!entry || entry.mapped === false || entry.hidden === true) return false
+    if (service.isTruthyFlag(entry.pinned)) return true
+    var ws = service.workspaceNameOf(entry)
+    if (!ws || ws.indexOf("special:") === 0) return false
+    var active = service.activeWorkspaces
+    for (var key in active) {
+      if (active[key] === ws) return true
+    }
+    return false
+  }
+
+  function focusHistoryId(entry) {
+    if (!entry) return 9999
+    var n = Number(entry.focusHistoryID)
+    if (!isFinite(n)) n = Number(entry.focus_history_id)
     return isFinite(n) ? n : 9999
   }
 
   function rectsOverlap(ax, ay, aw, ah, bx, by, bw, bh) {
-    return ax < bx + bw - 1 && ax + aw > bx + 1 && ay < by + bh - 1 && ay + ah > by + 1
+    return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by
   }
 
-  // Overlay layers always paint above every client. Hide a bar when a window
-  // stacked above its owner covers that bar's rectangle.
-  function barOccluded(self, barX, barY, barW, barH) {
-    if (!self) return false
-    var selfInfo = self.lastIpcObject
-    if (!selfInfo) return false
-    var selfAddr = service.normalizedAddress(self.address)
-    var selfWs = service.workspaceName(self, selfInfo)
-    var selfFloat = selfInfo.floating === true
-    var selfFh = service.focusHistoryId(selfInfo)
-    var tops = Hyprland.toplevels.values
-    for (var i = 0; i < tops.length; i++) {
-      var other = tops[i]
-      if (!other || other === self) continue
-      var otherAddr = service.normalizedAddress(other.address)
-      if (selfAddr && otherAddr && selfAddr === otherAddr) continue
-      var oi = other.lastIpcObject
-      if (!oi || oi.mapped === false || oi.hidden === true || oi.visible === false) continue
-      if (!oi.at || oi.at.length !== 2 || !oi.size || oi.size.length !== 2) continue
-      var otherWs = service.workspaceName(other, oi)
-      if (otherWs !== selfWs && oi.pinned !== true) continue
-      var otherFloat = oi.floating === true
-      var above = false
-      if (otherFloat !== selfFloat) above = otherFloat
-      else above = service.focusHistoryId(oi) < selfFh
-      if (!above) continue
-      if (service.rectsOverlap(barX, barY, barW, barH, oi.at[0], oi.at[1], oi.size[0], oi.size[1]))
+  function clientByAddress(addr) {
+    var normalized = service.normalizedAddress(addr)
+    if (!normalized) return null
+    var list = service.clients
+    for (var i = 0; i < list.length; i++) {
+      if (service.normalizedAddress(list[i].address) === normalized) return list[i]
+    }
+    return null
+  }
+
+  function stackedAbove(other, selfAddr) {
+    var self = service.clientByAddress(selfAddr)
+    if (!other || !self) return false
+    var otherAddr = service.normalizedAddress(other.address)
+    var selfNorm = service.normalizedAddress(selfAddr)
+    var active = Hyprland.activeToplevel ? service.normalizedAddress(Hyprland.activeToplevel.address) : null
+    if (active && otherAddr === active && selfNorm !== active) return true
+    if (active && selfNorm === active && otherAddr !== active) return false
+    var otherFloat = service.isTruthyFlag(other.floating)
+    var selfFloat = service.isTruthyFlag(self.floating)
+    if (otherFloat !== selfFloat) return otherFloat
+    return service.focusHistoryId(other) < service.focusHistoryId(self)
+  }
+
+  // Overlay layers always paint above every client. Hide a bar when an
+  // on-screen window stacked above its owner covers that bar's rectangle.
+  function barOccluded(selfAddr, barX, barY, barW, barH) {
+    var list = service.clients
+    var selfNorm = service.normalizedAddress(selfAddr)
+    if (!selfNorm) return false
+    for (var i = 0; i < list.length; i++) {
+      var other = list[i]
+      if (!service.isOnScreen(other)) continue
+      if (service.normalizedAddress(other.address) === selfNorm) continue
+      if (!other.at || other.at.length !== 2 || !other.size || other.size.length !== 2) continue
+      if (!service.stackedAbove(other, selfAddr)) continue
+      if (service.rectsOverlap(barX, barY, barW, barH, other.at[0], other.at[1], other.size[0], other.size[1]))
         return true
     }
     return false
@@ -196,20 +231,60 @@ Item {
     }
   }
 
+  Process {
+    id: clientsProc
+    command: ["hyprctl", "-j", "clients"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        try {
+          var parsed = JSON.parse(text || "[]")
+          if (Array.isArray(parsed)) service.clients = parsed
+        } catch (e) {
+        }
+      }
+    }
+  }
+
+  Process {
+    id: monitorsProc
+    command: ["hyprctl", "-j", "monitors"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        try {
+          var parsed = JSON.parse(text || "[]")
+          var map = ({})
+          if (Array.isArray(parsed)) {
+            for (var i = 0; i < parsed.length; i++) {
+              var mon = parsed[i]
+              if (mon && mon.name && mon.activeWorkspace && mon.activeWorkspace.name)
+                map[mon.name] = String(mon.activeWorkspace.name)
+            }
+          }
+          service.activeWorkspaces = map
+        } catch (e) {
+        }
+      }
+    }
+  }
+
   Component.onCompleted: {
     borderSizeProc.running = true
     inactiveBorderProc.running = true
+    clientsProc.running = true
+    monitorsProc.running = true
   }
 
-  property int layoutGen: 0
-
   Timer {
-    interval: 100
+    interval: 80
     running: true
     repeat: true
     triggeredOnStart: true
     onTriggered: {
       Hyprland.refreshToplevels()
+      if (!clientsProc.running) clientsProc.running = true
+      if (!monitorsProc.running) monitorsProc.running = true
       service.layoutGen++
     }
   }
@@ -239,7 +314,6 @@ Item {
     }
 
     Item {
-      id: glyph
       anchors.centerIn: parent
       width: Math.round(parent.width * 0.46)
       height: width
@@ -347,55 +421,61 @@ Item {
       required property var modelData
 
       readonly property var info: modelData ? modelData.lastIpcObject : null
+      readonly property var snap: service.clientByAddress(modelData ? modelData.address : null)
+      readonly property var geo: snap || info
       readonly property var targetScreen: service.screenForMonitor(modelData ? modelData.monitor : null)
-      readonly property string wsName: service.workspaceName(modelData, info)
-      readonly property int fsMode: service.fullscreenMode(info)
-      readonly property bool floating: !!(info && info.floating === true)
+      readonly property string wsName: service.workspaceName(modelData, geo)
+      readonly property int fsMode: service.fullscreenMode(geo)
+      readonly property bool floating: service.isTruthyFlag(geo && geo.floating)
       readonly property bool maximized: fsMode === 1
-      readonly property bool onActiveWorkspace: modelData !== null && modelData.workspace !== null
-        && (modelData.workspace.active === true || (info !== null && info.pinned === true))
       readonly property bool shelfHidden: wsName === service.minimizeWorkspace || wsName === service.peekWorkspace
-      readonly property bool geometryOk: !!(onActiveWorkspace
-        && !shelfHidden
+      readonly property bool onScreen: {
+        var gen = service.layoutGen
+        return !shelfHidden && service.isOnScreen(snap || info)
+      }
+      readonly property bool geometryOk: !!(onScreen
         && fsMode !== 2
-        && info !== null && info.mapped !== false && info.hidden !== true
-        && info.at && info.at.length === 2 && info.size && info.size.length === 2
-        && info.size[0] >= service.barWidth + service.barInset * 2
+        && geo !== null && geo.mapped !== false && geo.hidden !== true
+        && geo.at && geo.at.length === 2 && geo.size && geo.size.length === 2
+        && geo.size[0] >= service.barWidth + service.barInset * 2
         && targetScreen !== null)
+      readonly property int winX: geometryOk ? geo.at[0] : 0
+      readonly property int winY: geometryOk ? geo.at[1] : 0
+      readonly property int winW: geometryOk ? geo.size[0] : 0
       readonly property int barLeft: {
         if (!geometryOk) return 0
-        var x = info.at[0] + info.size[0] - targetScreen.x - service.barWidth - service.barInset
+        var x = winX + winW - targetScreen.x - service.barWidth - service.barInset
         var maxX = Math.max(0, targetScreen.width - service.barWidth)
         return Math.round(Math.max(0, Math.min(x, maxX)))
       }
       readonly property int barTop: {
         if (!geometryOk) return 0
-        var y = info.at[1] - targetScreen.y + service.barInset
+        var y = winY - targetScreen.y + service.barInset
         var maxY = Math.max(0, targetScreen.height - service.barHeight)
         return Math.round(Math.max(0, Math.min(y, maxY)))
       }
       readonly property bool occluded: {
         var gen = service.layoutGen
-        var n = Hyprland.toplevels.values.length
+        var n = service.clients.length
         if (!geometryOk || chrome.dragging) return false
-        return service.barOccluded(modelData, targetScreen.x + barLeft, targetScreen.y + barTop,
+        return service.barOccluded(modelData.address, targetScreen.x + barLeft, targetScreen.y + barTop,
                                    service.barWidth, service.barHeight)
       }
       readonly property bool showable: geometryOk && (!occluded || dragging)
       readonly property bool isActiveWindow: modelData !== null && Hyprland.activeToplevel !== null
-        && Hyprland.activeToplevel.address === modelData.address
+        && service.normalizedAddress(Hyprland.activeToplevel.address) === service.normalizedAddress(modelData.address)
 
       property bool dragging: false
-      property real dragStartWinX: 0
-      property real dragStartWinY: 0
-      property int dragStartBarLeft: 0
-      property int dragStartBarTop: 0
+      property real dragHotspotX: 0
+      property real dragHotspotY: 0
+      property real predX: 0
+      property real predY: 0
       property real pendingMoveX: 0
       property real pendingMoveY: 0
       property bool pendingMove: false
 
       screen: targetScreen
-      visible: showable
+      visible: showable || dragging
       color: "transparent"
 
       WlrLayershell.namespace: "omarchy-window-controls"
@@ -407,8 +487,12 @@ Item {
       implicitHeight: service.barHeight
 
       anchors { left: true; top: true }
-      margins.left: dragging ? dragStartBarLeft + Math.round(moveDrag.translation.x) : barLeft
-      margins.top: dragging ? dragStartBarTop + Math.round(moveDrag.translation.y) : barTop
+      margins.left: dragging && targetScreen
+        ? Math.round(Math.max(0, Math.min(predX + winW - targetScreen.x - service.barWidth - service.barInset, targetScreen.width - service.barWidth)))
+        : barLeft
+      margins.top: dragging && targetScreen
+        ? Math.round(Math.max(0, Math.min(predY - targetScreen.y + service.barInset, targetScreen.height - service.barHeight)))
+        : barTop
 
       Timer {
         interval: 16
@@ -424,38 +508,6 @@ Item {
         }
       }
 
-      DragHandler {
-        id: moveDrag
-        acceptedButtons: Qt.RightButton
-        target: null
-        cursorShape: Qt.ClosedHandCursor
-        onActiveChanged: {
-          if (active) {
-            if (!chrome.info || !chrome.modelData) return
-            chrome.dragStartWinX = chrome.info.at[0]
-            chrome.dragStartWinY = chrome.info.at[1]
-            chrome.dragStartBarLeft = chrome.barLeft
-            chrome.dragStartBarTop = chrome.barTop
-            chrome.dragging = true
-            service.bringToTop(chrome.modelData.address)
-            if (chrome.maximized)
-              service.toggleMaximize(chrome.modelData.address, chrome.fsMode)
-            service.ensureFloating(chrome.modelData.address, chrome.floating)
-          } else {
-            if (chrome.pendingMove && chrome.modelData)
-              service.moveWindowTo(chrome.modelData.address, chrome.pendingMoveX, chrome.pendingMoveY)
-            chrome.pendingMove = false
-            chrome.dragging = false
-          }
-        }
-        onTranslationChanged: {
-          if (!active || !chrome.dragging) return
-          chrome.pendingMoveX = chrome.dragStartWinX + translation.x
-          chrome.pendingMoveY = chrome.dragStartWinY + translation.y
-          chrome.pendingMove = true
-        }
-      }
-
       Rectangle {
         id: bar
         anchors.fill: parent
@@ -464,15 +516,100 @@ Item {
                        barHover.hovered || chrome.dragging ? 0.96 : (chrome.isActiveWindow ? 0.88 : 0.72))
         border.color: chrome.isActiveWindow || chrome.dragging ? service.accentColor : service.inactiveBorderColor
         border.width: Math.max(1, service.borderSize)
-        Behavior on color { ColorAnimation { duration: 120 } }
 
         HoverHandler {
           id: barHover
           cursorShape: chrome.dragging ? Qt.ClosedHandCursor : Qt.OpenHandCursor
         }
 
+        MouseArea {
+          id: dragArea
+          anchors.fill: parent
+          acceptedButtons: Qt.LeftButton | Qt.RightButton
+          preventStealing: true
+          hoverEnabled: false
+          cursorShape: chrome.dragging ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+          z: 10
+          property bool dragMoved: false
+
+          function cursorGlobal(mouse) {
+            if (dragArea.mapToGlobal)
+              return dragArea.mapToGlobal(mouse.x, mouse.y)
+            return Qt.point((chrome.targetScreen ? chrome.targetScreen.x : 0) + chrome.barLeft + mouse.x,
+                            (chrome.targetScreen ? chrome.targetScreen.y : 0) + chrome.barTop + mouse.y)
+          }
+
+          function buttonAt(px) {
+            var total = service.buttonSize * 4 + service.buttonGap * 3
+            var start = (width - total) / 2
+            var x = px - start
+            if (x < 0 || x > total) return -1
+            var stride = service.buttonSize + service.buttonGap
+            var i = Math.floor(x / stride)
+            var inner = x - i * stride
+            if (inner > service.buttonSize) return -1
+            if (i < 0 || i > 3) return -1
+            return i
+          }
+
+          onPressed: function(mouse) {
+            if (!chrome.geo || !chrome.modelData) return
+            if (mouse.button === Qt.RightButton) {
+              var g = cursorGlobal(mouse)
+              chrome.dragHotspotX = g.x - chrome.winX
+              chrome.dragHotspotY = g.y - chrome.winY
+              chrome.predX = chrome.winX
+              chrome.predY = chrome.winY
+              chrome.dragging = true
+              dragArea.dragMoved = false
+              service.bringToTop(chrome.modelData.address)
+              if (chrome.maximized)
+                service.toggleMaximize(chrome.modelData.address, chrome.fsMode)
+              service.ensureFloating(chrome.modelData.address, chrome.floating)
+              var addr = service.normalizedAddress(chrome.modelData.address)
+              if (addr)
+                service.dispatchLua("hl.dsp.window.drag({ window = \"address:" + addr + "\" })")
+              mouse.accepted = true
+            }
+          }
+          onPositionChanged: function(mouse) {
+            if (!pressed || !chrome.dragging) return
+            var g = cursorGlobal(mouse)
+            var nx = g.x - chrome.dragHotspotX
+            var ny = g.y - chrome.dragHotspotY
+            if (Math.abs(nx - chrome.predX) > 1 || Math.abs(ny - chrome.predY) > 1)
+              dragArea.dragMoved = true
+            chrome.predX = nx
+            chrome.predY = ny
+            chrome.pendingMoveX = nx
+            chrome.pendingMoveY = ny
+            chrome.pendingMove = true
+          }
+          onReleased: function(mouse) {
+            if (mouse.button === Qt.RightButton) {
+              if (chrome.pendingMove && chrome.modelData)
+                service.moveWindowTo(chrome.modelData.address, chrome.pendingMoveX, chrome.pendingMoveY)
+              chrome.pendingMove = false
+              chrome.dragging = false
+              return
+            }
+            if (mouse.button === Qt.LeftButton && !chrome.dragging && chrome.modelData) {
+              var which = buttonAt(mouse.x)
+              if (which === 0) service.minimizeWindow(chrome.modelData.address)
+              else if (which === 1) service.toggleMaximize(chrome.modelData.address, chrome.fsMode)
+              else if (which === 2) service.toggleFloat(chrome.modelData.address)
+              else if (which === 3) service.closeWindow(chrome.modelData.address)
+            }
+          }
+          onCanceled: {
+            chrome.pendingMove = false
+            chrome.dragging = false
+          }
+        }
+
         Row {
           anchors.centerIn: parent
+          z: 1
           spacing: service.buttonGap
 
           ControlButton {
