@@ -26,6 +26,18 @@ Item {
   property var clients: []
   property var activeWorkspaces: ({})
   property int layoutGen: 0
+  property var manifest: null
+  property string dragTarget: ""
+
+  readonly property string hookPath: {
+    var dir = ""
+    if (manifest && manifest.__sourceDir) dir = String(manifest.__sourceDir)
+    if (!dir) {
+      var url = String(Qt.resolvedUrl("."))
+      dir = url.replace(/^file:\/\//, "").replace(/\/$/, "")
+    }
+    return dir + "/hook.lua"
+  }
 
   readonly property color accentColor: Color.flatColor(Color.pick("hyprland.active-border", Color.accent), Color.accent)
   readonly property color glyphColor: Color.flatColor(Color.pick("hyprland.active-border-foreground", Color.foreground), Color.foreground)
@@ -144,18 +156,29 @@ Item {
     return null
   }
 
+  function zScore(entry) {
+    if (!entry) return -99999
+    var fs = Number(entry.fullscreen) === 2 ? 2 : 0
+    var fl = service.isTruthyFlag(entry.floating) ? 1 : 0
+    return fs * 10000 + fl * 1000 - service.focusHistoryId(entry)
+  }
+
   function stackedAbove(other, selfAddr) {
     var self = service.clientByAddress(selfAddr)
     if (!other || !self) return false
-    var otherAddr = service.normalizedAddress(other.address)
-    var selfNorm = service.normalizedAddress(selfAddr)
-    var active = Hyprland.activeToplevel ? service.normalizedAddress(Hyprland.activeToplevel.address) : null
-    if (active && otherAddr === active && selfNorm !== active) return true
-    if (active && selfNorm === active && otherAddr !== active) return false
-    var otherFloat = service.isTruthyFlag(other.floating)
-    var selfFloat = service.isTruthyFlag(self.floating)
-    if (otherFloat !== selfFloat) return otherFloat
-    return service.focusHistoryId(other) < service.focusHistoryId(self)
+    return service.zScore(other) > service.zScore(self)
+  }
+
+  function setDragTarget(addr) {
+    var normalized = addr ? service.normalizedAddress(addr) : ""
+    if (!normalized) normalized = ""
+    if (service.dragTarget === normalized) return
+    service.dragTarget = normalized
+    var path = service.hookPath
+    if (!path) return
+    var lua = "dofile(" + JSON.stringify(path) + "); window_controls.set_drag_target("
+      + (normalized ? JSON.stringify(normalized) : "nil") + ")"
+    Quickshell.execDetached(["hyprctl", "eval", lua])
   }
 
   // Overlay layers always paint above every client. Hide a bar when an
@@ -287,6 +310,12 @@ Item {
       if (!monitorsProc.running) monitorsProc.running = true
       service.layoutGen++
     }
+  }
+
+  Timer {
+    id: dragClearTimer
+    interval: 1500
+    onTriggered: service.setDragTarget("")
   }
 
   component ControlButton: Item {
@@ -520,6 +549,14 @@ Item {
         HoverHandler {
           id: barHover
           cursorShape: chrome.dragging ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+          onHoveredChanged: {
+            if (hovered && chrome.modelData) {
+              dragClearTimer.stop()
+              service.setDragTarget(chrome.modelData.address)
+            } else {
+              dragClearTimer.restart()
+            }
+          }
         }
 
         MouseArea {
