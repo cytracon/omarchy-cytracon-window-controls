@@ -5,7 +5,7 @@
   "version": "1.0.4",
   "author": "Cytracon",
   "license": "MIT",
-  "homepage": "https://github.com/cytracon/omarchy-window-controls",
+  "homepage": "https://github.com/cytracon/omarchy-cytracon-window-controls",
   "description": "A compact control bar on every Hyprland window: minimize, maximize, float, and close.",
   "kinds": ["service"],
   "keepLoaded": true,

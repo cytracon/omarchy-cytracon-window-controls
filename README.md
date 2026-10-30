@@ -12,7 +12,7 @@ from that bar widget, or with the usual special-workspace bindings.
 ## Install
 
 ```sh
-omarchy plugin add https://github.com/cytracon/omarchy-window-controls --enable
+omarchy plugin add https://github.com/cytracon/omarchy-cytracon-window-controls --enable
 ```
 
 Plugin ID: `io.github.cytracon.window-controls`.
